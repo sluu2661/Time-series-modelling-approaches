@@ -1,0 +1,147 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import datetime
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from scipy.stats import norm
+from scipy.stats import pearsonr
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+
+#location of csv file
+file_path = 'insert file location'
+
+#upon inspection, raw data contains '..' entries; we set such entries as NaN
+data = pd.read_csv(file_path, na_values='..')
+
+#extract Sydney to LA outbound flights from data; fortunately, SYD/LA data has no NaN entries
+Syd_LA_data = data[(data.AustralianPort == 'Sydney') & (data.ForeignPort == 'Los Angeles')].reset_index(drop=True)
+
+#data only goes from Jan 2009 to November 2018 (inclusive)
+#entries in "Month" column not in usual format, only extract MONTH, since we already have YEAR column
+Syd_LA_data.Month = np.array([x[-3:] for x in Syd_LA_data.Month]) 
+
+Syd_LA_data['Datetime'] = Syd_LA_data.Month + ' ' + Syd_LA_data.Year.astype(str) 
+Syd_LA_data['Datetime'] = pd.to_datetime(Syd_LA_data['Datetime']) #convert str to datetime format
+
+#interested in forecasting Syd->LA PaxOut (revenue passengers outbound)
+#INITIAL VISUALIZATION of PaxOut vs month for each year
+year = 2009
+while year < 2019:
+	plt.plot(Syd_LA_data[Syd_LA_data.Year == year].Month, Syd_LA_data[Syd_LA_data.Year == year].PaxOut, label='{0}'.format(year))
+	plt.xlabel('month')
+	plt.ylabel('PaxOut')
+	plt.legend(loc='best')
+	year += 1
+plt.show()
+
+#plotting PaxOut time series 
+fig, ax = plt.subplots(2, 1)
+ax[0].plot(Syd_LA_data.Datetime, Syd_LA_data.PaxOut)
+ax[0].set_xlabel('Month')
+ax[0].set_title('PaxOut from 2009-2018')
+ax[1].plot(Syd_LA_data.iloc[12:,:].Datetime, Syd_LA_data.iloc[12:,:].PaxOut)
+ax[1].set_xlabel('Month')
+ax[1].set_title('PaxOut from 2010-2018')
+plt.show()
+#2009 time series behaviour is different to those between 2010-2018; 2010-2018 data exhibit strong seasonal trends
+#this is possibly due to Global Financial Crisis (GFC), which occured in 2008/2009. 2009 data does show steady increase in PaxOut, possibly due to recovery from GFC
+#seasonal trends for PaxOut between 2012-2016 appears to follow a weak upward trend, 2016-2018 shows downward trend behaviour with signs of recovery towards 2019
+#this can be seen by using the seasonal_decompose from statsmodels package
+
+decomposition = seasonal_decompose(Syd_LA_data.PaxOut, freq=12)
+decomposition.plot()
+plt.show()
+
+#visualization of empirical distribution of PaxOut per month; find very few outliers 
+groupby_month = Syd_LA_data.groupby('Month')
+sns.boxplot(x='Month', y = 'PaxOut', data = Syd_LA_data)
+plt.show()
+
+#inspecting monthly returns of PaxOut
+PaxOut_return = pd.DataFrame((Syd_LA_data.iloc[1:,7].values - Syd_LA_data.iloc[0:-1,7].values) / Syd_LA_data.iloc[0:-1,7].values, columns=['return'])
+
+plt.plot(Syd_LA_data.iloc[1:,:].Datetime, PaxOut_return)
+plt.xlabel('Datetime')
+plt.ylabel('monthly PaxOut return')
+plt.show()
+
+monthly_return_decomposition = seasonal_decompose(PaxOut_return, freq=12)
+monthly_return_decomposition.plot()
+plt.show()
+#Instead of aiming to model the raw PaxOut per month values, we may instead aim to model monthly PaxOut return
+#Time series data of monthly PaxOut return behaviour over 2009-2018 are similar
+
+#for the purpose of this task, I will decide to model and forecast PaxOut values per month from the raw PaxOut time series as this is the most easiest.
+
+####### MODELLING ##########
+#we do not include the data from 2009 as this was the year which was affected by the GFC
+#we will choose the seasonal exponential smoothing model (SES), including trend and seasonal effects
+relevant_data = Syd_LA_data[Syd_LA_data.Year > 2009][['Datetime','PaxOut']].reset_index(drop=True)
+train_data = relevant_data[relevant_data.Datetime.dt.year <= 2016]
+test_data = relevant_data[relevant_data.Datetime.dt.year > 2016]
+
+#can do hyperparameter tuning to optimize; SES MODEL
+SES_model = ExponentialSmoothing(train_data.PaxOut, seasonal_periods=12, trend='add', seasonal='add', damped=True).fit()
+SES_predict = SES_model.forecast(test_data.shape[0])
+SES_predict_2019 = SES_model.forecast(test_data.shape[0]+13)
+
+#create dataframe for forecasted values for 2019
+SES_forecast = pd.DataFrame()
+SES_forecast['Datetime'] = (test_data.iloc[0:12,:].Datetime + datetime.timedelta(days=730)).values
+SES_forecast['PaxOut'] = SES_predict_2019[-12:].values
+SES_forecast.index += 108 #reindex so that indices 'glue' with historical data
+
+#model visualization against raw data
+plt.plot(train_data.Datetime, train_data.PaxOut, label='Train raw')
+plt.plot(test_data.Datetime, test_data.PaxOut, label='Test raw')
+plt.plot(train_data.Datetime, SES_model.fittedvalues, marker='o', color='blue', label='SES fitted')
+plt.plot(test_data.Datetime, SES_predict, marker='o', color='blue', label='SES test forecast')
+plt.plot(test_data.iloc[0:12,:].Datetime + datetime.timedelta(days=730), SES_predict_2019[-12:], marker='o', label='SES 2019 forecast', color='red')
+plt.legend(loc='best')
+plt.show()
+
+#calculating the mean absolute percentage error (MAPE) of model
+train_MAPE = np.sum(np.abs((train_data.PaxOut - SES_model.fittedvalues)) / train_data.PaxOut) / train_data.shape[0]
+test_MAPE = np.sum(np.abs((test_data.PaxOut - SES_predict)) / test_data.PaxOut) / test_data.shape[0]
+overal_MAPE = (train_MAPE + test_MAPE) / 2
+print("SES MAPE over the training set is {0}; \nSES MAPE over testing set is {1}; \nOverall SES MAPE is {2}".format(train_MAPE, test_MAPE, overal_MAPE)) 
+#overal MAPE of SES model is 4.7%, this is a very small percentage error!
+
+#DIAGNOSTIC TESTING OF RESIDUALS
+#residual analysis of SES model; need to check that residuals are approximately normally distributed.
+#residuals of training data
+fig, ax = plt.subplots(2)
+ax[0].plot(train_data.Datetime, SES_model.resid, label='residuals/error')
+ax[1].hist(SES_model.resid, density=True)
+plt.show()
+
+#seaborn distplot can show the empirical distribution as well as a fit of a normal distribution
+sns.distplot(SES_model.resid, fit=norm, norm_hist=True, bins=10)
+plt.show()
+
+#The distribution of the residuals do not exact follow a normal distribution, however, it is quite close
+#fitted normal distribution parameters
+norm_mean, norm_std = norm.fit(SES_model.resid)
+
+#ACF and PACF plots of the residuals of SES model, blue window goes confidence internal of 95%
+fig, ax = plt.subplots(2, figsize=(12,6))
+ax[0] = plot_acf(SES_model.resid, ax=ax[0], lags=24)
+ax[1] = plot_pacf(SES_model.resid, ax=ax[1], lags=24)
+plt.show()
+#no significant peaks for nonzero lag values; peaks are all within the 95% interval band, suggests that the residuals are stationary 
+
+#A scatter plot of observed vs fittedvalues of SES model, are they correlated?
+plt.scatter(pd.concat([train_data.PaxOut, test_data.PaxOut]), pd.concat([SES_model.fittedvalues, SES_predict]))
+plt.xlabel('observed PaxOut values')
+plt.ylabel('estimated PaxOut values')
+plt.show()
+print("Pearson correlation coefficient between observed and estimated values is {0}".format(pearsonr(pd.concat([train_data.PaxOut, test_data.PaxOut]), pd.concat([SES_model.fittedvalues, SES_predict]))[0]))
+
+#The SES model seems to be a good model for the monthly PaxOut values per year.
+#It was able to capture the seasonal behaviour of PaxOut values and obtained a MAPE of 4.7%, which is will below the standard deviation of historical PaxOut values
+#Other models such as seasonal arima (SARIMA) may be considered as alternatives, ensemble methods, etc....
+
+#printing 2019 forecast of the SES model
+print('Forecast of PaxOut between Sydney to Los Angeles for 2019 is \n{0}'.format(SES_forecast))
