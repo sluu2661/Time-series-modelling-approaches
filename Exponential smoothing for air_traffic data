@@ -145,3 +145,65 @@ print("Pearson correlation coefficient between observed and estimated values is 
 
 #printing 2019 forecast of the SES model
 print('Forecast of PaxOut between Sydney to Los Angeles for 2019 is \n{0}'.format(SES_forecast))
+
+
+################################################################################################################
+#Implementing SEASONAL ARIMA model (SARIMA)
+#seasonal difference; from previous visualization, there is a yearly seasonal pattern
+season_diff12 = Syd_LA_data['PaxOut'].iloc[23:].values - Syd_LA_data['PaxOut'].iloc[11:107].values
+#identifying appropriate non-seasonal differencing
+first_diff_season_diff = season_diff12[1:] - season_diff12[0:-1] 
+second_diff_season_diff = first_diff_season_diff[1:] - first_diff_season_diff[0:-1]
+
+fig, ax = plt.subplots(3)
+ax[0].plot(season_diff12)
+ax[1].plot(first_diff_season_diff)
+ax[2].plot(second_diff_season_diff)
+plt.show()
+
+fig, ax = plt.subplots(2, figsize=(12,6))
+ax[0] = plot_acf(season_diff12, ax=ax[0], lags=25)
+ax[1] = plot_pacf(season_diff12, ax=ax[1], lags=25)
+plt.show()
+
+#first order differencing of seasonal differenced time series looks stationary
+#while the second order difference of seasonal difference also looks stationary, we consider first order differencing 
+#as it represents a less complex model
+
+fig, ax = plt.subplots(2, figsize=(12,6))
+ax[0] = plot_acf(first_diff_season_diff, ax=ax[0], lags=25)
+ax[1] = plot_pacf(first_diff_season_diff, ax=ax[1], lags=25)
+plt.show()
+
+#analysis of the ACF and PCF plots allows us to infer the appropriate order of AR and MA terms 
+
+#training SARIMA model
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+sarimax_model = SARIMAX(train_data.PaxOut, trend='n', order=(0,1,1), seasonal_order=(0,1,1,12)).fit(disp=0)
+sarimax_predict = sarimax_model.forecast(test_data.shape[0])
+sarimax_predict_2019 = SeasES_model.forecast(test_data.shape[0]+13)
+
+
+plt.plot(train_data.Datetime, train_data.PaxOut, label='Train')
+plt.plot(test_data.Datetime, test_data.PaxOut, label='Test')
+plt.plot(train_data.Datetime, sarimax_model.fittedvalues, marker='o',  color='blue')
+plt.plot(test_data.Datetime, sarimax_predict, label='SES', color='blue')
+plt.plot(test_data.iloc[11:].Datetime + datetime.timedelta(days=365), sarimax_predict_2019[-12:], label='SES 2019', color='red')
+plt.legend(loc='best')
+plt.show()
+
+sarimax_model.summary()
+
+#############
+#NOTE: while we can consider the AFC and PFC plots to infer the parameter values of the SARIMA model, it may be beneficial
+#to do a grid-search over the SARIMA model parameters, and choose the best model under some metric. 
+#For example, we can choose a model by considering its accuracy and information criterion (model complexity)
+
+
+
+
+
+
+
+
